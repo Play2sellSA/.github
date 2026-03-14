@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://play2sell.com">Website</a> &middot;
-  <a href="https://play2sell.com/#contact">Contact</a> &middot;
+  <a href="https://play2sell.com/contact">Contact</a> &middot;
   <a href="https://www.linkedin.com/company/play2sell/">LinkedIn</a>
 </p>
 
