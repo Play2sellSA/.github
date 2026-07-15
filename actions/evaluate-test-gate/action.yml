@@ -1,0 +1,23 @@
+name: 'Evaluate test gate'
+description: 'Gate da frota SalesOS*: avalia results dos jobs de teste (needs) e decide o required check'
+inputs:
+  results:
+    description: 'toJSON(needs) do job caller'
+    required: true
+  relevant:
+    description: '"false" quando o PR não toca código relevante (skip = trivial pass)'
+    required: false
+    default: 'true'
+  skip_label:
+    description: '"true" quando o label de skip auditável está no PR'
+    required: false
+    default: 'false'
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env:
+        RESULTS: ${{ inputs.results }}
+        RELEVANT: ${{ inputs.relevant }}
+        SKIP_LABEL: ${{ inputs.skip_label }}
+      run: bash "${{ github.action_path }}/gate.sh"

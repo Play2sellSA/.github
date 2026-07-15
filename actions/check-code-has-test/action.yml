@@ -1,0 +1,46 @@
+name: 'Check code has test'
+description: 'Guard da frota SalesOS*: PR com código novo exige teste no mesmo PR (fail-closed; escape via label test-exempt-approved)'
+inputs:
+  base_ref:
+    description: 'Branch base do PR (github.base_ref)'
+    required: true
+  test_exempt:
+    description: '"true" quando o PR tem o label test-exempt-approved'
+    required: false
+    default: 'false'
+  code_regex:
+    description: 'grep -E do que conta como código'
+    required: true
+  code_exclude_regex:
+    description: 'grep -vE de exclusões (d.ts, mocks, helpers)'
+    required: false
+    default: '$^'
+  test_regex:
+    description: 'grep -E do que conta como teste'
+    required: true
+  low_risk_regex:
+    description: 'grep -E opcional de arquivos cosméticos (types/constants/index)'
+    required: false
+    default: ''
+  low_risk_max:
+    description: 'máx de arquivos low-risk que passam com aviso'
+    required: false
+    default: '2'
+  hint:
+    description: 'mensagem de ensino específica do repo (multiline)'
+    required: false
+    default: 'Adicione um teste cobrindo a mudança (veja exemplos no repo).'
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env:
+        BASE_REF: ${{ inputs.base_ref }}
+        TEST_EXEMPT: ${{ inputs.test_exempt }}
+        CODE_REGEX: ${{ inputs.code_regex }}
+        CODE_EXCLUDE_REGEX: ${{ inputs.code_exclude_regex }}
+        TEST_REGEX: ${{ inputs.test_regex }}
+        LOW_RISK_REGEX: ${{ inputs.low_risk_regex }}
+        LOW_RISK_MAX: ${{ inputs.low_risk_max }}
+        HINT: ${{ inputs.hint }}
+      run: bash "${{ github.action_path }}/check.sh"
