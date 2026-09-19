@@ -5,6 +5,12 @@
   code_exclude_regex, low_risk_regex/max, hint.
 - `evaluate-test-gate` — avalia `toJSON(needs)` do caller e decide o required check
   (`🧪 Test gate`).
+- `sentry-release` — registra no Sentry a release deployada, associa os commits e cria
+  o deploy do ambiente (Release Health). Inputs: auth_token (vazio = pula em silêncio),
+  org, projects, version, environment, repository, deploy_url. Roda DEPOIS do deploy e
+  só escreve no Sentry: se reprovar, o que subiu continua de pé — vermelha fica a
+  escrituração. `version` e `environment` têm de ser os MESMOS valores que o app manda
+  nos eventos, senão o Sentry não casa release com erro.
 
 **Consumo (pin por SHA + comentário da versão — lição tj-actions):**
 ```yaml

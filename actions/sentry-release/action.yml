@@ -1,0 +1,46 @@
+name: 'Sentry release & deploy'
+description: 'Frota SalesOS*: registra no Sentry a release deployada, associa os commits e cria o deploy do ambiente'
+inputs:
+  auth_token:
+    description: 'Token do Sentry com escopo org:ci (ou project:releases). VAZIO = pula em silêncio.'
+    required: false
+    default: ''
+  org:
+    description: 'Slug da organização no Sentry'
+    required: false
+    default: 'play2sell'
+  projects:
+    description: 'Slugs dos projetos do Sentry, separados por vírgula (ex.: salesos-backend)'
+    required: true
+  version:
+    description: 'Versão da release — o MESMO valor que o app manda em `release` (nos nossos apps, o SHA do commit)'
+    required: true
+  environment:
+    description: 'Ambiente do deploy — o MESMO valor que o app manda em `environment` (ex.: production, salesos-agents)'
+    required: true
+  repository:
+    description: 'owner/repo para associar os commits. Precisa estar integrado no Sentry; sem integração a associação é pulada com aviso.'
+    required: false
+    default: ${{ github.repository }}
+  deploy_url:
+    description: 'URL que o deploy publicou (opcional, aparece no Sentry)'
+    required: false
+    default: ''
+  api_base:
+    description: 'Base da API do Sentry. Só muda em teste.'
+    required: false
+    default: 'https://sentry.io/api/0'
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env:
+        SENTRY_AUTH_TOKEN: ${{ inputs.auth_token }}
+        SENTRY_ORG: ${{ inputs.org }}
+        SENTRY_PROJECTS: ${{ inputs.projects }}
+        SENTRY_VERSION: ${{ inputs.version }}
+        SENTRY_ENV: ${{ inputs.environment }}
+        SENTRY_REPOSITORY: ${{ inputs.repository }}
+        SENTRY_DEPLOY_URL: ${{ inputs.deploy_url }}
+        SENTRY_API_BASE: ${{ inputs.api_base }}
+      run: bash "${{ github.action_path }}/sentry-release.sh"
