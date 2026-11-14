@@ -54,7 +54,8 @@ chmod +x "$BIN/curl"
 SHA=0123456789abcdef0123456789abcdef01234567
 _rodar() { # [env extra...]
   FAKE_LOG="$BIN/log"; : > "$FAKE_LOG"; : > "$BIN/out"
-  env PATH="$BIN:$PATH" FAKE_LOG="$FAKE_LOG" GITHUB_OUTPUT="$BIN/out" GITHUB_STEP_SUMMARY="" \
+  # -u: na CI o runner exporta GITHUB_RUN_ID/REPOSITORY e eles vazariam para o meta do caso.
+  env -u GITHUB_RUN_ID -u GITHUB_REPOSITORY PATH="$BIN:$PATH" FAKE_LOG="$FAKE_LOG" GITHUB_OUTPUT="$BIN/out" GITHUB_STEP_SUMMARY="" \
     VERCEL_API_BASE="https://vercel.test" VD_INTERVALO_S=0 "$@" \
     bash "$SCRIPT" > "$BIN/saida" 2>&1
   echo $?
@@ -81,7 +82,7 @@ grep -q '^deployment_id=dpl_TESTE$' "$BIN/out" && _ok "saída deployment_id" || 
 # não há GITHUB_RUN_ID: a chave não pode ir vazia.
 echo "$c" | python3 -c 'import json,sys;m=json.load(sys.stdin)["meta"];assert all(v for v in m.values()),m;assert "githubRunId" not in m' \
   && _ok "meta sem valor vazio" || _bad "meta com valor vazio: $c"
-c2=$( FAKE_LOG="$BIN/log2"; : > "$FAKE_LOG"; env PATH="$BIN:$PATH" FAKE_LOG="$FAKE_LOG" GITHUB_OUTPUT="$BIN/out" GITHUB_RUN_ID=42 \
+c2=$( FAKE_LOG="$BIN/log2"; : > "$FAKE_LOG"; env -u GITHUB_REPOSITORY PATH="$BIN:$PATH" FAKE_LOG="$FAKE_LOG" GITHUB_OUTPUT="$BIN/out" GITHUB_RUN_ID=42 \
   VERCEL_API_BASE="https://vercel.test" VD_INTERVALO_S=0 "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x bash "$SCRIPT" >/dev/null 2>&1;
   grep -A2 'metodo=POST url=https://vercel.test/v13/deployments' "$FAKE_LOG" | sed -n 's/^  body=//p' | head -1 )
 echo "$c2" | python3 -c 'import json,sys;assert json.load(sys.stdin)["meta"]["githubRunId"]=="42"' && _ok "meta leva o run quando existe" || _bad "run fora do meta: $c2"
