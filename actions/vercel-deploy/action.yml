@@ -1,0 +1,77 @@
+name: 'Vercel deploy (commit exato)'
+description: 'Frota SalesOS*: publica na Vercel o commit exato do run, espera READY e prova que o domínio do ambiente passou a servi-lo'
+inputs:
+  token:
+    description: 'Token da Vercel com acesso ao time. VAZIO = reprova (push que não virou deploy não fica verde).'
+    required: true
+  team_id:
+    description: 'Id do time na Vercel'
+    required: false
+    default: 'team_WV3RpWf5Q020DCOjvaq2Ndci'
+  project_id:
+    description: 'Id do projeto na Vercel (prj_…)'
+    required: true
+  project_name:
+    description: 'Nome do projeto na Vercel (ex.: dashboard, sales-os-frontend)'
+    required: true
+  alvo:
+    description: 'production | staging | preview'
+    required: true
+  custom_environment:
+    description: 'Slug do ambiente personalizado da Vercel para o alvo staging (ex.: staging). Vazio = deploy de preview.'
+    required: false
+    default: ''
+  alias:
+    description: 'Domínio a apontar explicitamente para o deploy depois de READY (projeto sem ambiente personalizado, ex.: Website)'
+    required: false
+    default: ''
+  dominio:
+    description: 'Domínio que tem de passar a servir este deploy — é a prova do passo (ex.: dashboard-staging.play2sell.com)'
+    required: true
+  sha:
+    description: 'Commit a publicar (40 caracteres)'
+    required: false
+    default: ${{ github.sha }}
+  ref:
+    description: 'Branch de origem do commit (só registro; quem manda é o sha)'
+    required: false
+    default: ${{ github.ref_name }}
+  repo_id:
+    description: 'Id numérico do repositório no GitHub'
+    required: false
+    default: ${{ github.repository_id }}
+  timeout_s:
+    description: 'Tempo máximo esperando READY, em segundos'
+    required: false
+    default: '1500'
+  api_base:
+    description: 'Base da API da Vercel. Só muda em teste.'
+    required: false
+    default: 'https://api.vercel.com'
+outputs:
+  deployment_id:
+    description: 'Id do deploy na Vercel'
+    value: ${{ steps.deploy.outputs.deployment_id }}
+  url:
+    description: 'URL própria do deploy (*.vercel.app)'
+    value: ${{ steps.deploy.outputs.url }}
+runs:
+  using: 'composite'
+  steps:
+    - id: deploy
+      shell: bash
+      env:
+        VERCEL_TOKEN: ${{ inputs.token }}
+        VERCEL_TEAM_ID: ${{ inputs.team_id }}
+        VERCEL_PROJECT_ID: ${{ inputs.project_id }}
+        VERCEL_PROJECT_NAME: ${{ inputs.project_name }}
+        VD_ALVO: ${{ inputs.alvo }}
+        VD_CUSTOM_ENV: ${{ inputs.custom_environment }}
+        VD_ALIAS: ${{ inputs.alias }}
+        VD_DOMINIO: ${{ inputs.dominio }}
+        VD_SHA: ${{ inputs.sha }}
+        VD_REF: ${{ inputs.ref }}
+        VD_REPO_ID: ${{ inputs.repo_id }}
+        VD_TIMEOUT_S: ${{ inputs.timeout_s }}
+        VERCEL_API_BASE: ${{ inputs.api_base }}
+      run: bash "${{ github.action_path }}/vercel-deploy.sh"
