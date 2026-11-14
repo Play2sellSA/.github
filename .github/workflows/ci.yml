@@ -1,5 +1,5 @@
 name: CI
-# Self-tests das actions canônicas da frota (guard + gate).
+# Self-tests das actions canônicas da frota (guard, gate, sentry-release, vercel-deploy).
 # Required check deste repo: mudança nas actions só entra com a matriz verde.
 on:
   push:
@@ -12,5 +12,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run self-test matrix (guard + gate)
+      - name: Run self-test matrix (todas as actions)
         run: bash scripts/tests/run_tests.sh

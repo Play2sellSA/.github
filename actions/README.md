@@ -11,6 +11,13 @@
   só escreve no Sentry: se reprovar, o que subiu continua de pé — vermelha fica a
   escrituração. `version` e `environment` têm de ser os MESMOS valores que o app manda
   nos eventos, senão o Sentry não casa release com erro.
+- `vercel-deploy` — publica na Vercel o COMMIT EXATO do run pela API (não por deploy
+  hook, que constrói a ponta da branch dele), espera READY, confere que a Vercel
+  construiu o SHA pedido e que o domínio do ambiente passou a servir o deploy (lido
+  na API, nunca por polling na URL pública). Inputs: token (vazio = reprova),
+  project_id, project_name, alvo (production|staging|preview), custom_environment,
+  alias, dominio. Base do tronco único (plano "só STAGING e PROD", f5-02): o MESMO
+  commit da main vai ao STAGING e depois à PRODUÇÃO.
 
 **Consumo (pin por SHA + comentário da versão — lição tj-actions):**
 ```yaml
