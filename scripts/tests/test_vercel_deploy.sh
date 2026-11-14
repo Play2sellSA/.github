@@ -33,17 +33,29 @@ for arg in "$@"; do
   esac
 done
 { echo "CHAMADA metodo=$metodo url=$url"; echo "  headers=$cabecalhos"; echo "  body=$corpo"; } >> "$FAKE_LOG"
+# Sequências "a,b,c": a N-ésima chamada daquele tipo recebe o N-ésimo item (o último se repete).
+_seq() { # nome lista
+  local f="$FAKE_LOG.n_$1" n; n=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$f"
+  local IFS=,; local itens=($2); local i=$(( n <= ${#itens[@]} ? n - 1 : ${#itens[@]} - 1 )); printf '%s' "${itens[$i]}"
+}
+[ -n "${FAKE_CURL_FALHA:-}" ] && { echo "curl: (6) Could not resolve host" >&2; exit 6; }
 code=200; resposta='{}'
 case "$metodo $url" in
   "POST "*/v13/deployments\?*)
     code="${FAKE_CODE_CREATE:-200}"
-    if [ "$code" = "200" ]; then resposta='{"id":"dpl_TESTE","url":"teste.vercel.app"}'; else resposta='{"error":{"code":"bad_request","message":"motivo da vercel"}}'; fi ;;
+    if [ "$code" = "200" ]; then resposta='{"id":"dpl_TESTE","url":"teste.vercel.app"}'; else resposta='{"error":{"code":"bad_request","message":"motivo da vercel"}}'; fi
+    [ -n "${FAKE_SEM_ID:-}" ] && resposta='{"url":"teste.vercel.app"}' ;;
   "GET "*/v13/deployments/dpl_TESTE*)
-    resposta='{"id":"dpl_TESTE","readyState":"'"${FAKE_STATE:-READY}"'","errorMessage":"falha simulada","gitSource":{"type":"github","sha":"'"${FAKE_BUILT_SHA:-$VD_SHA}"'"}}' ;;
+    code=$(_seq leitura "${FAKE_GET_CODES:-200}")
+    estado=$(_seq estado "${FAKE_STATES:-${FAKE_STATE:-READY}}")
+    if [ -n "${FAKE_SO_META_SHA:-}" ]; then git='{"type":"github"}'; meta='{"githubCommitSha":"'"$FAKE_SO_META_SHA"'"}'
+    else git='{"type":"github","sha":"'"${FAKE_BUILT_SHA:-$VD_SHA}"'"}'; meta='{}'; fi
+    [ "$code" = "200" ] && resposta='{"id":"dpl_TESTE","readyState":"'"$estado"'","errorMessage":"falha simulada","gitSource":'"$git"',"meta":'"$meta"'}' \
+      || resposta='{"error":{"message":"instável"}}' ;;
   "POST "*/v2/deployments/dpl_TESTE/aliases*)
     code="${FAKE_CODE_ALIAS:-200}"; resposta='{"alias":"x"}' ;;
   "GET "*/v4/aliases/*)
-    resposta='{"deploymentId":"'"${FAKE_ALIAS_DEPLOY:-dpl_TESTE}"'"}' ;;
+    resposta='{"deploymentId":"'"$(_seq dominio "${FAKE_ALIAS_SEQ:-${FAKE_ALIAS_DEPLOY:-dpl_TESTE}}")"'"}' ;;
 esac
 [ -n "$saida" ] && printf '%s' "$resposta" > "$saida"
 printf '%s' "$code"
@@ -53,9 +65,9 @@ chmod +x "$BIN/curl"
 
 SHA=0123456789abcdef0123456789abcdef01234567
 _rodar() { # [env extra...]
-  FAKE_LOG="$BIN/log"; : > "$FAKE_LOG"; : > "$BIN/out"
+  FAKE_LOG="$BIN/log"; : > "$FAKE_LOG"; : > "$BIN/out"; : > "$BIN/resumo"; rm -f "$BIN"/log.n_*
   # -u: na CI o runner exporta GITHUB_RUN_ID/REPOSITORY e eles vazariam para o meta do caso.
-  env -u GITHUB_RUN_ID -u GITHUB_REPOSITORY PATH="$BIN:$PATH" FAKE_LOG="$FAKE_LOG" GITHUB_OUTPUT="$BIN/out" GITHUB_STEP_SUMMARY="" \
+  env -u GITHUB_RUN_ID -u GITHUB_REPOSITORY PATH="$BIN:$PATH" FAKE_LOG="$FAKE_LOG" GITHUB_OUTPUT="$BIN/out" GITHUB_STEP_SUMMARY="${RESUMO:-}" \
     VERCEL_API_BASE="https://vercel.test" VD_INTERVALO_S=0 "$@" \
     bash "$SCRIPT" > "$BIN/saida" 2>&1
   echo $?
@@ -155,6 +167,69 @@ rc=$(_rodar "${BASE[@]}" VD_ALVO=prod VD_DOMINIO=x)
 echo "[14] alias recusado: reprova"
 rc=$(_rodar "${BASE[@]}" VD_ALVO=staging VD_ALIAS=w.example VD_DOMINIO=w.example FAKE_CODE_ALIAS=403)
 [ "$rc" = "1" ] && _ok "rc 1" || _bad "rc $rc"
+
+# ── Casos do comportamento real da Vercel (medidos em 14/11/2026) ───────────
+
+echo "[15] fila real: QUEUED → BUILDING → READY publica, e espera pela API"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x FAKE_STATES=QUEUED,BUILDING,READY)
+[ "$rc" = "0" ] && _ok "rc 0" || { _bad "rc $rc"; cat "$BIN/saida"; }
+n=$(grep -c 'metodo=GET url=https://vercel.test/v13/deployments/dpl_TESTE' "$BIN/log"); [ "$n" = "3" ] && _ok "3 leituras até READY" || _bad "$n leituras"
+
+echo "[16] leitura instável (HTTP 500) no meio da espera não derruba o deploy"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x FAKE_GET_CODES=500,502,200 FAKE_STATES=BUILDING,BUILDING,READY)
+[ "$rc" = "0" ] && _ok "rc 0" || { _bad "rc $rc"; cat "$BIN/saida"; }
+grep -q 'HTTP 500 — tentando de novo' "$BIN/saida" && _ok "avisa a leitura instável" || _bad "aviso sumiu"
+
+echo "[17] CANCELED: reprova"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x FAKE_STATES=BUILDING,CANCELED VD_TIMEOUT_S=3)
+[ "$rc" = "1" ] && grep -q 'terminou CANCELED' "$BIN/saida" && _ok "rc 1 e diz CANCELED" || _bad "rc $rc"
+grep -q '/v4/aliases/' "$BIN/log" && _bad "conferiu domínio de deploy cancelado" || _ok "parou antes do domínio"
+
+echo "[18] domínio atrasado: aponta para o deploy velho e só depois para o nosso → publica"
+# Real: a Vercel move o domínio do ambiente alguns segundos depois do READY.
+rc=$(_rodar "${BASE[@]}" VD_ALVO=staging VD_CUSTOM_ENV=staging VD_DOMINIO=s.example FAKE_ALIAS_SEQ=dpl_VELHO,dpl_VELHO,dpl_TESTE)
+[ "$rc" = "0" ] && _ok "rc 0" || { _bad "rc $rc"; cat "$BIN/saida"; }
+n=$(grep -c 'url=https://vercel.test/v4/aliases/' "$BIN/log"); [ "$n" = "3" ] && _ok "parou na 3ª leitura (a que confere)" || _bad "$n leituras"
+
+echo "[19] commit só no meta (gitSource sem sha): confere pelo meta"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x FAKE_SO_META_SHA="$SHA")
+[ "$rc" = "0" ] && _ok "meta igual → rc 0" || { _bad "rc $rc"; cat "$BIN/saida"; }
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x FAKE_SO_META_SHA=ffffffffffffffffffffffffffffffffffffffff)
+[ "$rc" = "1" ] && _ok "meta diferente → rc 1" || _bad "rc $rc"
+
+echo "[20] rede fora (curl falha): reprova sem dizer que subiu"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x FAKE_CURL_FALHA=1)
+[ "$rc" = "1" ] && _ok "rc 1" || _bad "rc $rc"
+grep -q 'curl falhou' "$BIN/saida" && _ok "diz que a chamada falhou" || _bad "mensagem muda"
+grep -q '✅' "$BIN/saida" && _bad "imprimiu ✅ sem deploy" || _ok "nenhum ✅"
+
+echo "[21] Vercel responde 200 sem id: reprova"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x FAKE_SEM_ID=1 VD_TIMEOUT_S=2)
+[ "$rc" = "1" ] && grep -q 'sem id de deploy' "$BIN/saida" && _ok "rc 1 e diz o porquê" || _bad "rc $rc"
+[ "$(_chamadas)" = "1" ] && _ok "não seguiu adiante" || _bad "$(_chamadas) chamadas"
+
+echo "[22] SHA em maiúsculas: configuração inválida, 0 chamadas"
+rc=$(_rodar "${BASE[@]}" VD_SHA=0123456789ABCDEF0123456789ABCDEF01234567 VD_ALVO=production VD_DOMINIO=x)
+[ "$rc" = "2" ] && [ "$(_chamadas)" = "0" ] && _ok "rc 2, 0 chamadas" || _bad "rc $rc"
+
+echo "[23] sem domínio: configuração inválida (sem prova não há verde)"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production)
+[ "$rc" = "2" ] && [ "$(_chamadas)" = "0" ] && _ok "rc 2, 0 chamadas" || _bad "rc $rc"
+
+echo "[24] sucesso registra o resumo do passo e as saídas"
+rc=$(RESUMO="$BIN/resumo" _rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=dashboard.play2sell.com)
+grep -q 'dashboard.play2sell.com. → .dpl_TESTE. · commit .0123456789ab' "$BIN/resumo" && _ok "resumo com domínio, deploy e commit" || _bad "resumo: $(cat "$BIN/resumo")"
+grep -q '^url=https://teste.vercel.app$' "$BIN/out" && _ok "saída url" || _bad "sem saída url"
+
+echo "[25] só fala com a API (nunca com o domínio público) e nunca imprime o token"
+for caso in "VD_ALVO=production VD_DOMINIO=dashboard.play2sell.com" "VD_ALVO=production VD_DOMINIO=x FAKE_CODE_CREATE=400" \
+            "VD_ALVO=staging VD_ALIAS=w.example VD_DOMINIO=w.example FAKE_CODE_ALIAS=403" "VD_ALVO=production VD_DOMINIO=x FAKE_STATE=ERROR" "VD_ALVO=production VD_DOMINIO=x FAKE_CURL_FALHA=1"; do
+  # shellcheck disable=SC2086
+  _rodar "${BASE[@]}" $caso >/dev/null
+  fora=$(grep '^CHAMADA' "$BIN/log" | grep -vc 'url=https://vercel.test/')
+  [ "$fora" = "0" ] && _ok "só API em: $caso" || _bad "$fora chamada(s) fora da API em: $caso"
+  grep -q 'tok-secreto' "$BIN/saida" "$BIN/out" && _bad "TOKEN NO LOG em: $caso" || _ok "token fora do log em: $caso"
+done
 
 echo ""
 [ "$FAILURES" = "0" ] && { echo "vercel-deploy: todos os casos ok"; exit 0; } || { echo "vercel-deploy: $FAILURES falha(s)"; exit 1; }
