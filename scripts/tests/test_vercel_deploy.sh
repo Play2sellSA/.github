@@ -17,9 +17,10 @@ trap 'rm -rf "$BIN"' EXIT
 
 cat > "$BIN/curl" <<'FAKE'
 #!/usr/bin/env bash
-metodo="GET"; url=""; saida=""; corpo=""; cabecalhos=""; prox=""
+metodo="GET"; url=""; saida=""; corpo=""; cabecalhos=""; prox=""; limites=""
 for arg in "$@"; do
   case "$prox" in
+    L) limites="$limites $arg"; prox=""; continue ;;
     X) metodo="$arg"; prox=""; continue ;;
     o) saida="$arg";  prox=""; continue ;;
     d) corpo="$arg";  prox=""; continue ;;
@@ -28,17 +29,26 @@ for arg in "$@"; do
   esac
   case "$arg" in
     -X) prox=X ;; -o) prox=o ;; -d) prox=d ;; -H) prox=H ;; -w) prox=w ;;
+    --connect-timeout|--max-time) limites="$limites $arg"; prox=L ;;
     -sS|-s|-S) ;;
     http*) url="$arg" ;;
   esac
 done
-{ echo "CHAMADA metodo=$metodo url=$url"; echo "  headers=$cabecalhos"; echo "  body=$corpo"; } >> "$FAKE_LOG"
+{ echo "CHAMADA metodo=$metodo url=$url"; echo "  headers=$cabecalhos"; echo "  body=$corpo"; echo "  limites=$limites"; } >> "$FAKE_LOG"
 # Sequências "a,b,c": a N-ésima chamada daquele tipo recebe o N-ésimo item (o último se repete).
 _seq() { # nome lista
   local f="$FAKE_LOG.n_$1" n; n=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$f"
   local IFS=,; local itens=($2); local i=$(( n <= ${#itens[@]} ? n - 1 : ${#itens[@]} - 1 )); printf '%s' "${itens[$i]}"
 }
 [ -n "${FAKE_CURL_FALHA:-}" ] && { echo "curl: (6) Could not resolve host" >&2; exit 6; }
+# Falha de rede por tipo de chamada, em sequência ("28,0" = 1ª cai com curl 28, 2ª passa).
+case "$metodo $url" in
+  "POST "*/v13/deployments\?*) rc=$(_seq rc_criacao "${FAKE_RC_CREATE:-0}") ;;
+  "GET "*/v13/deployments/*)    rc=$(_seq rc_leitura "${FAKE_RC_GET:-0}") ;;
+  "GET "*/v4/aliases/*)         rc=$(_seq rc_dominio "${FAKE_RC_ALIAS:-0}") ;;
+  *) rc=0 ;;
+esac
+[ "$rc" != "0" ] && { echo "curl: ($rc) Failed to connect to api.vercel.com port 443 after 134376 ms" >&2; exit "$rc"; }
 code=200; resposta='{}'
 case "$metodo $url" in
   "POST "*/v13/deployments\?*)
@@ -230,6 +240,37 @@ for caso in "VD_ALVO=production VD_DOMINIO=dashboard.play2sell.com" "VD_ALVO=pro
   [ "$fora" = "0" ] && _ok "só API em: $caso" || _bad "$fora chamada(s) fora da API em: $caso"
   grep -q 'tok-secreto' "$BIN/saida" "$BIN/out" && _bad "TOKEN NO LOG em: $caso" || _ok "token fora do log em: $caso"
 done
+
+echo "[26] rede cai na leitura do estado (curl 28, o caso de 15/11) e volta → publica"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=staging VD_CUSTOM_ENV=staging VD_DOMINIO=app-staging.play2sell.com FAKE_RC_GET=28,28,0 FAKE_STATES=BUILDING,READY VD_TIMEOUT_S=30)
+[ "$rc" = "0" ] && _ok "exit 0 depois de 2 leituras perdidas" || _bad "exit $rc: $(tail -3 "$BIN/saida")"
+grep -q '::warning::vercel-deploy: curl falhou (28) em GET /v13/deployments/dpl_TESTE' "$BIN/saida" && _ok "avisa a falha de rede (warning, não error)" || _bad "sem warning da falha"
+grep -q '::error::' "$BIN/saida" && _bad "imprimiu ::error:: num deploy que deu certo" || _ok "nenhum ::error::"
+[ "$(grep -c 'metodo=POST url=https://vercel.test/v13/deployments' "$BIN/log")" = "1" ] && _ok "criou UM deploy só (não recria ao reler)" || _bad "criou mais de um deploy"
+grep -q 'app-staging.play2sell.com servindo o deploy dpl_TESTE' "$BIN/saida" && _ok "prova pelo domínio no fim" || _bad "sem prova do domínio"
+
+echo "[27] rede fora em TODAS as leituras → reprova ao fim do prazo, sem dizer que subiu"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x FAKE_RC_GET=28 VD_TIMEOUT_S=0)
+[ "$rc" != "0" ] && _ok "exit $rc" || _bad "passou com a rede fora"
+grep -q 'não ficou pronto' "$BIN/saida" && _ok "diz que não ficou pronto" || _bad "motivo: $(tail -2 "$BIN/saida")"
+grep -q '✅' "$BIN/saida" && _bad "imprimiu ✅ sem o deploy pronto" || _ok "nenhum ✅"
+
+echo "[28] rede cai na leitura do domínio uma vez → tenta de novo e publica"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=dashboard.play2sell.com FAKE_RC_ALIAS=7,0)
+[ "$rc" = "0" ] && _ok "exit 0" || _bad "exit $rc: $(tail -3 "$BIN/saida")"
+[ "$(grep -c 'metodo=GET url=https://vercel.test/v4/aliases/' "$BIN/log")" = "2" ] && _ok "2 leituras do domínio" || _bad "leituras do domínio: $(grep -c 'v4/aliases' "$BIN/log")"
+
+echo "[29] rede cai na CRIAÇÃO → reprova na hora, sem tentar criar de novo"
+rc=$(_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x FAKE_RC_CREATE=28,0)
+[ "$rc" != "0" ] && _ok "exit $rc" || _bad "passou com a criação sem resposta"
+[ "$(_chamadas)" = "1" ] && _ok "1 chamada só (POST não se repete às cegas)" || _bad "$(_chamadas) chamadas"
+grep -q '::error::vercel-deploy: curl falhou (28) em POST' "$BIN/saida" && _ok "erro nomeia o POST" || _bad "erro: $(tail -2 "$BIN/saida")"
+
+echo "[30] toda chamada sai com teto de conexão e de duração"
+_rodar "${BASE[@]}" VD_ALVO=production VD_DOMINIO=x >/dev/null
+sem=$(grep '^  limites=' "$BIN/log" | grep -vc -- '--connect-timeout 20 --max-time 120')
+tot=$(grep -c '^  limites=' "$BIN/log")
+[ "$tot" -ge 3 ] && [ "$sem" = "0" ] && _ok "$tot chamadas, todas com --connect-timeout 20 --max-time 120" || _bad "$sem de $tot sem os limites"
 
 echo ""
 [ "$FAILURES" = "0" ] && { echo "vercel-deploy: todos os casos ok"; exit 0; } || { echo "vercel-deploy: $FAILURES falha(s)"; exit 1; }
