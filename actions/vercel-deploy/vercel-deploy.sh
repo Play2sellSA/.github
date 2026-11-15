@@ -89,22 +89,36 @@ CORPO="$TMP/corpo"
 
 # Token no cabeçalho, nunca na URL (o runner ecoa a URL no log). Sem --fail:
 # o motivo do erro vem no CORPO, e é ele que vai para a tela.
+#
+# Rede instável (15/11/2026, run 43721560273 do Frontend): o deploy foi CRIADO,
+# mas a 1ª leitura do estado esperou 134 s e caiu com curl (28) — o passo
+# reprovou e a produção não saiu, por um soluço de rede. Agora:
+#   - toda chamada tem teto de conexão e de duração (um travamento não come o
+#     prazo inteiro);
+#   - LEITURA=1 (GET, que pode repetir sem efeito): falha de rede vira o código
+#     "000" e quem chamou tenta de novo dentro do prazo que já tinha;
+#   - a CRIAÇÃO (POST) continua reprovando na hora: repetir criaria outro deploy.
+CURL_LIMITES=(--connect-timeout "${VD_CONNECT_TIMEOUT_S:-20}" --max-time "${VD_MAX_TIME_S:-120}")
 chamar() { # método caminho [json]
   local metodo="$1" caminho="$2" json="${3:-}" code rc sep="?"
   case "$caminho" in *\?*) sep="&" ;; esac
   local url="$API$caminho${sep}teamId=$TEAM"
   if [ -n "$json" ]; then
-    code=$(curl -sS -X "$metodo" "$url" \
+    code=$(curl -sS "${CURL_LIMITES[@]}" -X "$metodo" "$url" \
       -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/json" \
       -d "$json" -o "$CORPO" -w '%{http_code}')
   else
-    code=$(curl -sS -X "$metodo" "$url" \
+    code=$(curl -sS "${CURL_LIMITES[@]}" -X "$metodo" "$url" \
       -H "Authorization: Bearer $TOKEN" \
       -o "$CORPO" -w '%{http_code}')
   fi
   rc=$?
   if [ "$rc" != "0" ]; then
+    if [ -n "${LEITURA:-}" ] && [ "$metodo" = "GET" ]; then
+      echo "::warning::vercel-deploy: curl falhou ($rc) em $metodo $caminho — é leitura, vou tentar de novo" >&2
+      : > "$CORPO"; printf '000'; return 0
+    fi
     echo "::error::vercel-deploy: curl falhou ($rc) em $metodo $caminho" >&2
     return 1
   fi
@@ -165,7 +179,7 @@ echo "   deploy $ID criado (https://$URL)"
 # Laço contra a API da Vercel (não contra o domínio público).
 inicio=$(date +%s); ESTADO=""
 while :; do
-  code=$(chamar GET "/v13/deployments/$ID") || exit 1
+  code=$(LEITURA=1 chamar GET "/v13/deployments/$ID") || exit 1
   if ok2xx "$code"; then
     ESTADO=$(campo 'd.get("readyState")')
     case "$ESTADO" in
@@ -209,7 +223,7 @@ fi
 # instante: até 6 leituras espaçadas da API antes de reprovar.
 APONTA=""
 for tentativa in 1 2 3 4 5 6; do
-  code=$(chamar GET "/v4/aliases/$DOMINIO") || exit 1
+  code=$(LEITURA=1 chamar GET "/v4/aliases/$DOMINIO") || exit 1
   if ok2xx "$code"; then
     APONTA=$(campo 'd.get("deploymentId")')
     [ "$APONTA" = "$ID" ] && break
